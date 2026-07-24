@@ -6,16 +6,16 @@
   ],
   "lowPriorityFiles": [],
   "rootMainFiles": [
-    "static/chunks/[turbopack]_browser_dev_hmr-client_hmr-client_ts_cedd0592._.js",
-    "static/chunks/node_modules_next_dist_compiled_react-dom_1e674e59._.js",
-    "static/chunks/node_modules_next_dist_compiled_react-server-dom-turbopack_9212ccad._.js",
-    "static/chunks/node_modules_next_dist_compiled_next-devtools_index_1dd7fb59.js",
-    "static/chunks/node_modules_next_dist_compiled_a0e4c7b4._.js",
-    "static/chunks/node_modules_next_dist_client_a38d7d69._.js",
-    "static/chunks/node_modules_next_dist_4b2403f5._.js",
-    "static/chunks/node_modules_@swc_helpers_cjs_d80fb378._.js",
-    "static/chunks/_a0ff3932._.js",
-    "static/chunks/turbopack-_86f4650b._.js"
+    "static/chunks/[turbopack]_browser_dev_hmr-client_hmr-client_ts_1xx01vv._.js",
+    "static/chunks/node_modules_next_dist_compiled_next-devtools_index_090k2jm.js",
+    "static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js",
+    "static/chunks/node_modules_next_dist_compiled_react-server-dom-turbopack_164kp-6._.js",
+    "static/chunks/node_modules_next_dist_compiled_1amofcm._.js",
+    "static/chunks/node_modules_next_dist_client_0r5nbpw._.js",
+    "static/chunks/node_modules_next_dist_1ybzpk2._.js",
+    "static/chunks/node_modules_@swc_helpers_cjs_1r9vbqw._.js",
+    "static/chunks/_1anvha4._.js",
+    "static/chunks/turbopack-_01_ro95._.js"
   ],
   "pages": {},
   "ampFirstPages": []
