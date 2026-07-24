@@ -11,6 +11,11 @@ interface AuthOptionsEnvelope {
   options?: unknown
 }
 
+type AuthAction = 'register' | 'login'
+
+const AUTH_REQUEST_TIMEOUT_MS = 15000
+const AUTH_TIMEOUT_MESSAGE = 'Passkey request timed out. Please try again.'
+
 function getApiErrorMessage(payload: unknown, fallbackMessage: string): string {
   if (payload && typeof payload === 'object' && 'error' in payload) {
     const errorPayload = payload as AuthApiError
@@ -32,11 +37,30 @@ function getAuthOptions(payload: unknown): unknown {
   return payload
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(new Error(timeoutMessage))
+    }, timeoutMs)
+
+    promise
+      .then((value) => {
+        clearTimeout(timeoutId)
+        resolve(value)
+      })
+      .catch((error) => {
+        clearTimeout(timeoutId)
+        reject(error)
+      })
+  })
+}
+
 export default function LoginPage() {
   const router = useRouter()
   const [username, setUsername] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [activeAction, setActiveAction] = useState<AuthAction | null>(null)
 
   useEffect(() => {
     let isMounted = true
@@ -75,6 +99,7 @@ export default function LoginPage() {
 
     setError(null)
     setIsSubmitting(true)
+    setActiveAction('register')
 
     try {
       const optionsResponse = await fetch('/api/auth/register-options', {
@@ -100,7 +125,11 @@ export default function LoginPage() {
       }
 
       const { startRegistration } = await import('@simplewebauthn/browser')
-      const attestation = await startRegistration(registrationOptions as Parameters<typeof startRegistration>[0])
+      const attestation = await withTimeout(
+        startRegistration({ optionsJSON: registrationOptions as Parameters<typeof startRegistration>[0]['optionsJSON'] }),
+        AUTH_REQUEST_TIMEOUT_MS,
+        AUTH_TIMEOUT_MESSAGE,
+      )
 
       const verifyResponse = await fetch('/api/auth/register-verify', {
         method: 'POST',
@@ -119,13 +148,16 @@ export default function LoginPage() {
 
       router.push('/')
     } catch (requestError) {
-      if (requestError instanceof Error && requestError.name === 'NotAllowedError') {
+      if (requestError instanceof Error && requestError.message === AUTH_TIMEOUT_MESSAGE) {
+        setError(AUTH_TIMEOUT_MESSAGE)
+      } else if (requestError instanceof Error && requestError.name === 'NotAllowedError') {
         setError('Passkey request was cancelled')
       } else {
         setError('Registration failed. Please try again.')
       }
     } finally {
       setIsSubmitting(false)
+      setActiveAction(null)
     }
   }
 
@@ -144,6 +176,7 @@ export default function LoginPage() {
 
     setError(null)
     setIsSubmitting(true)
+    setActiveAction('login')
 
     try {
       const optionsResponse = await fetch('/api/auth/login-options', {
@@ -169,7 +202,11 @@ export default function LoginPage() {
       }
 
       const { startAuthentication } = await import('@simplewebauthn/browser')
-      const assertion = await startAuthentication(loginOptions as Parameters<typeof startAuthentication>[0])
+      const assertion = await withTimeout(
+        startAuthentication({ optionsJSON: loginOptions as Parameters<typeof startAuthentication>[0]['optionsJSON'] }),
+        AUTH_REQUEST_TIMEOUT_MS,
+        AUTH_TIMEOUT_MESSAGE,
+      )
 
       const verifyResponse = await fetch('/api/auth/login-verify', {
         method: 'POST',
@@ -188,13 +225,16 @@ export default function LoginPage() {
 
       router.push('/')
     } catch (requestError) {
-      if (requestError instanceof Error && requestError.name === 'NotAllowedError') {
+      if (requestError instanceof Error && requestError.message === AUTH_TIMEOUT_MESSAGE) {
+        setError(AUTH_TIMEOUT_MESSAGE)
+      } else if (requestError instanceof Error && requestError.name === 'NotAllowedError') {
         setError('Passkey request was cancelled')
       } else {
         setError('Login failed. Please try again.')
       }
     } finally {
       setIsSubmitting(false)
+      setActiveAction(null)
     }
   }
 
@@ -234,7 +274,7 @@ export default function LoginPage() {
               className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
               disabled={isSubmitting}
             >
-              Register
+              {isSubmitting && activeAction === 'register' ? 'Registering...' : 'Register'}
             </button>
             <button
               type="button"
@@ -242,9 +282,15 @@ export default function LoginPage() {
               className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
               disabled={isSubmitting}
             >
-              Login
+              {isSubmitting && activeAction === 'login' ? 'Logging in...' : 'Login'}
             </button>
           </div>
+
+          {isSubmitting ? (
+            <p className="text-xs text-slate-500" aria-live="polite">
+              Waiting for passkey confirmation...
+            </p>
+          ) : null}
         </div>
       </section>
     </main>
