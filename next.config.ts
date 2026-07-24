@@ -1,9 +1,18 @@
 import type { NextConfig } from 'next'
 
+const isDevelopment = process.env.NODE_ENV !== 'production'
+
+const scriptSource = isDevelopment ? "'self' 'unsafe-inline' 'unsafe-eval'" : "'self' 'unsafe-inline'"
+const connectSource = isDevelopment ? "'self' ws: wss:" : "'self'"
+
 const securityHeaders = [
 	{
 		key: 'Content-Security-Policy',
-		value: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+		value: `default-src 'self'; script-src ${scriptSource}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src ${connectSource}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`,
+	},
+	{
+		key: 'Permissions-Policy',
+		value: 'camera=(), microphone=(), geolocation=()',
 	},
 	{
 		key: 'X-Frame-Options',
@@ -24,6 +33,8 @@ const securityHeaders = [
 ]
 
 const nextConfig: NextConfig = {
+	allowedDevOrigins: ['127.0.0.1', 'localhost'],
+
 	async headers() {
 		return [
 			{

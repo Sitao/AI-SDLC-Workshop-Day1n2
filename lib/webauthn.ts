@@ -1,7 +1,15 @@
 import { isoBase64URL } from '@simplewebauthn/server/helpers'
 
-function requireEnv(name: string): string {
+function getEnvOrDefault(name: string, developmentDefault: string): string {
   const value = process.env[name]
+
+  if (value) {
+    return value
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    return developmentDefault
+  }
 
   if (!value) {
     throw new Error(`${name} is not configured`)
@@ -11,15 +19,15 @@ function requireEnv(name: string): string {
 }
 
 export function getRelyingPartyName(): string {
-  return requireEnv('WEBAUTHN_RP_NAME')
+  return getEnvOrDefault('WEBAUTHN_RP_NAME', 'Todo App')
 }
 
 export function getRelyingPartyId(): string {
-  return requireEnv('WEBAUTHN_RP_ID')
+  return getEnvOrDefault('WEBAUTHN_RP_ID', 'localhost')
 }
 
 export function getExpectedOrigins(): string[] {
-  return requireEnv('WEBAUTHN_ORIGIN')
+  return getEnvOrDefault('WEBAUTHN_ORIGIN', 'http://localhost:3000,http://127.0.0.1:3000')
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean)

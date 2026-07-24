@@ -21,11 +21,15 @@ type AuthFlowState = {
 function getSessionSecret(): Uint8Array | null {
   const secret = process.env.SESSION_SECRET
 
-  if (!secret) {
-    return null
+  if (secret) {
+    return new TextEncoder().encode(secret)
   }
 
-  return new TextEncoder().encode(secret)
+  if (process.env.NODE_ENV !== 'production') {
+    return new TextEncoder().encode('dev-only-session-secret-change-me')
+  }
+
+  return null
 }
 
 function getAuthStateCookieName(flow: AuthFlow): string {
