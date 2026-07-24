@@ -1,5 +1,6 @@
 import path from 'node:path'
 import Database from 'better-sqlite3'
+import { getSingaporeNow, parseSingaporeDateTime, toSingaporeISOString } from '@/lib/timezone'
 
 type DatabaseClient = InstanceType<typeof Database>
 
@@ -115,6 +116,7 @@ export interface UpdateTodoInput {
   recurrence_pattern?: RecurrencePattern | null
   reminder_minutes?: ReminderMinutes | null
   last_notification_sent?: string | null
+  created_at?: string | null
   updated_at?: string | null
 }
 
@@ -128,6 +130,7 @@ export interface UpdateSubtaskInput {
   title?: string
   completed?: boolean
   position?: number
+  created_at?: string
 }
 
 export interface CreateTagInput {
@@ -178,6 +181,13 @@ export interface TodoExportEnvelope {
   exported_at: string
   todos: ExportedTodo[]
 }
+
+type AuthenticatorRow = Omit<Authenticator, 'counter'> & { counter: number | null }
+type TodoRow = Omit<Todo, 'completed' | 'is_recurring'> & {
+  completed: number
+  is_recurring: number
+}
+type SubtaskRow = Omit<Subtask, 'completed'> & { completed: number }
 
 const databaseFilePath = path.join(process.cwd(), 'todos.db')
 
@@ -277,123 +287,646 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_holidays_date ON holidays(date);
 `)
 
-function unimplemented(methodName: string): never {
-  throw new Error(`${methodName} is not implemented yet`)
+function mapAuthenticatorRow(row: AuthenticatorRow): Authenticator {
+  return {
+    ...row,
+    counter: row.counter ?? 0,
+  }
 }
 
-// Stub implementations intentionally preserve the shared contracts for M0.
+function mapSubtaskRow(row: SubtaskRow): Subtask {
+  return {
+    ...row,
+    completed: Boolean(row.completed),
+  }
+}
+
+function mapTodoRow(row: TodoRow): Todo {
+  return {
+    ...row,
+    completed: Boolean(row.completed),
+    is_recurring: Boolean(row.is_recurring),
+  }
+}
+
+function getPlaceholders(count: number): string {
+  return Array.from({ length: count }, () => '?').join(', ')
+}
+
+function hydrateTodos(todos: Todo[]): Todo[] {
+  if (todos.length === 0) {
+    return todos
+  }
+
+  const todoIds = todos.map((todo) => todo.id)
+  const placeholders = getPlaceholders(todoIds.length)
+
+  const subtaskRows = db
+    .prepare(`SELECT * FROM subtasks WHERE todo_id IN (${placeholders}) ORDER BY todo_id ASC, position ASC, id ASC`)
+    .all(...todoIds) as SubtaskRow[]
+
+  const tagRows = db
+    .prepare(
+      `SELECT todo_tags.todo_id, tags.id, tags.user_id, tags.name, tags.color, tags.created_at
+       FROM todo_tags
+       INNER JOIN tags ON tags.id = todo_tags.tag_id
+       WHERE todo_tags.todo_id IN (${placeholders})
+       ORDER BY todo_tags.todo_id ASC, tags.name COLLATE NOCASE ASC`,
+    )
+    .all(...todoIds) as Array<Tag & { todo_id: number }>
+
+  const subtasksByTodoId = new Map<number, Subtask[]>()
+  const tagsByTodoId = new Map<number, Tag[]>()
+
+  for (const row of subtaskRows) {
+    const subtasks = subtasksByTodoId.get(row.todo_id) ?? []
+    subtasks.push(mapSubtaskRow(row))
+    subtasksByTodoId.set(row.todo_id, subtasks)
+  }
+
+  for (const row of tagRows) {
+    const tags = tagsByTodoId.get(row.todo_id) ?? []
+    tags.push({
+      id: row.id,
+      user_id: row.user_id,
+      name: row.name,
+      color: row.color,
+      created_at: row.created_at,
+    })
+    tagsByTodoId.set(row.todo_id, tags)
+  }
+
+  return todos.map((todo) => ({
+    ...todo,
+    subtasks: subtasksByTodoId.get(todo.id) ?? [],
+    tags: tagsByTodoId.get(todo.id) ?? [],
+  }))
+}
+
+function fetchTodoByIdForUser(todoId: number, userId: number): Todo | null {
+  const row = db.prepare('SELECT * FROM todos WHERE id = ? AND user_id = ?').get(todoId, userId) as TodoRow | undefined
+
+  if (!row) {
+    return null
+  }
+
+  return hydrateTodos([mapTodoRow(row)])[0] ?? null
+}
+
+function ensureRecordChanged(changes: number, message: string): void {
+  if (changes === 0) {
+    throw new Error(message)
+  }
+}
 
 export const userDB = {
-  findById(_userId: number): User | null {
-    return unimplemented('userDB.findById')
+  findById(userId: number): User | null {
+    const row = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as User | undefined
+    return row ?? null
   },
-  findByUsername(_username: string): User | null {
-    return unimplemented('userDB.findByUsername')
+  findByUsername(username: string): User | null {
+    const row = db.prepare('SELECT * FROM users WHERE username = ?').get(username) as User | undefined
+    return row ?? null
   },
-  create(_username: string): User {
-    return unimplemented('userDB.create')
+  create(username: string): User {
+    const result = db
+      .prepare('INSERT INTO users (username, created_at) VALUES (?, ?)')
+      .run(username, toSingaporeISOString(getSingaporeNow()))
+    const user = userDB.findById(Number(result.lastInsertRowid))
+
+    if (!user) {
+      throw new Error('Failed to create user')
+    }
+
+    return user
   },
 }
 
 export const authenticatorDB = {
-  findByCredentialId(_credentialId: string): Authenticator | null {
-    return unimplemented('authenticatorDB.findByCredentialId')
+  findByCredentialId(credentialId: string): Authenticator | null {
+    const row = db.prepare('SELECT * FROM authenticators WHERE credential_id = ?').get(credentialId) as AuthenticatorRow | undefined
+    return row ? mapAuthenticatorRow(row) : null
   },
-  listByUserId(_userId: number): Authenticator[] {
-    return unimplemented('authenticatorDB.listByUserId')
+  listByUserId(userId: number): Authenticator[] {
+    const rows = db
+      .prepare('SELECT * FROM authenticators WHERE user_id = ? ORDER BY id ASC')
+      .all(userId) as AuthenticatorRow[]
+
+    return rows.map(mapAuthenticatorRow)
   },
-  create(_input: Omit<Authenticator, 'id' | 'created_at'>): Authenticator {
-    return unimplemented('authenticatorDB.create')
+  create(input: Omit<Authenticator, 'id' | 'created_at'>): Authenticator {
+    db.prepare(
+      'INSERT INTO authenticators (user_id, credential_id, credential_public_key, counter, created_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      input.user_id,
+      input.credential_id,
+      input.credential_public_key,
+      input.counter,
+      toSingaporeISOString(getSingaporeNow()),
+    )
+
+    const authenticator = authenticatorDB.findByCredentialId(input.credential_id)
+
+    if (!authenticator) {
+      throw new Error('Failed to create authenticator')
+    }
+
+    return authenticator
   },
-  updateCounter(_credentialId: string, _counter: number): Authenticator {
-    return unimplemented('authenticatorDB.updateCounter')
+  updateCounter(credentialId: string, counter: number): Authenticator {
+    const result = db.prepare('UPDATE authenticators SET counter = ? WHERE credential_id = ?').run(counter, credentialId)
+    ensureRecordChanged(result.changes, 'Authenticator not found')
+
+    const authenticator = authenticatorDB.findByCredentialId(credentialId)
+
+    if (!authenticator) {
+      throw new Error('Failed to update authenticator counter')
+    }
+
+    return authenticator
   },
 }
 
 export const todoDB = {
-  listByUserId(_userId: number): Todo[] {
-    return unimplemented('todoDB.listByUserId')
+  listByUserId(userId: number): Todo[] {
+    const rows = db.prepare('SELECT * FROM todos WHERE user_id = ? ORDER BY created_at DESC, id DESC').all(userId) as TodoRow[]
+    return hydrateTodos(rows.map(mapTodoRow))
   },
-  findByIdForUser(_todoId: number, _userId: number): Todo | null {
-    return unimplemented('todoDB.findByIdForUser')
+  findByIdForUser(todoId: number, userId: number): Todo | null {
+    return fetchTodoByIdForUser(todoId, userId)
   },
-  create(_input: CreateTodoInput): Todo {
-    return unimplemented('todoDB.create')
+  create(input: CreateTodoInput): Todo {
+    const result = db.prepare(
+      `INSERT INTO todos (
+        user_id,
+        title,
+        due_date,
+        priority,
+        is_recurring,
+        recurrence_pattern,
+        reminder_minutes,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+    ).run(
+      input.user_id,
+      input.title,
+      input.due_date ?? null,
+      input.priority ?? 'medium',
+      input.is_recurring ? 1 : 0,
+      input.recurrence_pattern ?? null,
+      input.reminder_minutes ?? null,
+      toSingaporeISOString(getSingaporeNow()),
+      toSingaporeISOString(getSingaporeNow()),
+    )
+
+    const todo = fetchTodoByIdForUser(Number(result.lastInsertRowid), input.user_id)
+
+    if (!todo) {
+      throw new Error('Failed to create todo')
+    }
+
+    return todo
   },
-  update(_todoId: number, _userId: number, _input: UpdateTodoInput): Todo {
-    return unimplemented('todoDB.update')
+  update(todoId: number, userId: number, input: UpdateTodoInput): Todo {
+    const updates: string[] = []
+    const values: Array<number | string | null> = []
+
+    if (input.title !== undefined) {
+      updates.push('title = ?')
+      values.push(input.title)
+    }
+
+    if (input.completed !== undefined) {
+      updates.push('completed = ?')
+      values.push(input.completed ? 1 : 0)
+    }
+
+    if (input.due_date !== undefined) {
+      updates.push('due_date = ?')
+      values.push(input.due_date)
+    }
+
+    if (input.priority !== undefined) {
+      updates.push('priority = ?')
+      values.push(input.priority)
+    }
+
+    if (input.is_recurring !== undefined) {
+      updates.push('is_recurring = ?')
+      values.push(input.is_recurring ? 1 : 0)
+    }
+
+    if (input.recurrence_pattern !== undefined) {
+      updates.push('recurrence_pattern = ?')
+      values.push(input.recurrence_pattern)
+    }
+
+    if (input.reminder_minutes !== undefined) {
+      updates.push('reminder_minutes = ?')
+      values.push(input.reminder_minutes)
+    }
+
+    if (input.last_notification_sent !== undefined) {
+      updates.push('last_notification_sent = ?')
+      values.push(input.last_notification_sent)
+    }
+
+    if (updates.length === 0) {
+      const todo = fetchTodoByIdForUser(todoId, userId)
+
+      if (!todo) {
+        throw new Error('Todo not found')
+      }
+
+      return todo
+    }
+
+    if (input.created_at !== undefined) {
+      updates.push('created_at = ?')
+      values.push(input.created_at)
+    }
+
+    const updatedAt = input.updated_at ?? toSingaporeISOString(getSingaporeNow())
+    updates.push('updated_at = ?')
+    values.push(updatedAt)
+
+    values.push(todoId, userId)
+    const result = db.prepare(`UPDATE todos SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`).run(...values)
+    ensureRecordChanged(result.changes, 'Todo not found')
+
+    const todo = fetchTodoByIdForUser(todoId, userId)
+
+    if (!todo) {
+      throw new Error('Failed to update todo')
+    }
+
+    return todo
   },
-  delete(_todoId: number, _userId: number): void {
-    return unimplemented('todoDB.delete')
+  delete(todoId: number, userId: number): void {
+    const result = db.prepare('DELETE FROM todos WHERE id = ? AND user_id = ?').run(todoId, userId)
+    ensureRecordChanged(result.changes, 'Todo not found')
   },
-  attachTag(_todoId: number, _tagId: number, _userId: number): void {
-    return unimplemented('todoDB.attachTag')
+  attachTag(todoId: number, tagId: number, userId: number): void {
+    db.prepare(
+      `INSERT OR IGNORE INTO todo_tags (todo_id, tag_id)
+       SELECT ?, ?
+       WHERE EXISTS (SELECT 1 FROM todos WHERE id = ? AND user_id = ?)
+         AND EXISTS (SELECT 1 FROM tags WHERE id = ? AND user_id = ?)`,
+    ).run(todoId, tagId, todoId, userId, tagId, userId)
   },
-  detachTag(_todoId: number, _tagId: number, _userId: number): void {
-    return unimplemented('todoDB.detachTag')
+  detachTag(todoId: number, tagId: number, userId: number): void {
+    db.prepare(
+      `DELETE FROM todo_tags
+       WHERE todo_id = ?
+         AND tag_id = ?
+         AND EXISTS (SELECT 1 FROM todos WHERE id = ? AND user_id = ?)
+         AND EXISTS (SELECT 1 FROM tags WHERE id = ? AND user_id = ?)`,
+    ).run(todoId, tagId, todoId, userId, tagId, userId)
   },
-  listNotificationCandidates(_userId: number): NotificationCandidate[] {
-    return unimplemented('todoDB.listNotificationCandidates')
+  listNotificationCandidates(userId: number): NotificationCandidate[] {
+    const rows = db
+      .prepare(
+        `SELECT id, title, due_date, reminder_minutes, last_notification_sent
+         FROM todos
+         WHERE user_id = ?
+           AND completed = 0
+           AND due_date IS NOT NULL
+           AND reminder_minutes IS NOT NULL`,
+      )
+      .all(userId) as Array<{
+      id: number
+      title: string
+      due_date: string
+      reminder_minutes: ReminderMinutes
+      last_notification_sent: string | null
+    }>
+
+    const now = getSingaporeNow().getTime()
+
+    return rows.filter((row) => {
+      const dueTime = parseSingaporeDateTime(row.due_date).getTime()
+      const windowStart = dueTime - row.reminder_minutes * 60 * 1000
+      const lastSent = row.last_notification_sent ? parseSingaporeDateTime(row.last_notification_sent).getTime() : null
+
+      return now >= windowStart && now <= dueTime && (lastSent === null || lastSent < windowStart)
+    }).map((row) => ({
+      todoId: row.id,
+      title: row.title,
+      dueDate: row.due_date,
+      reminderMinutes: row.reminder_minutes,
+      lastNotificationSent: row.last_notification_sent,
+    }))
   },
 }
 
 export const subtaskDB = {
-  listByTodoId(_todoId: number): Subtask[] {
-    return unimplemented('subtaskDB.listByTodoId')
+  findByIdForUser(subtaskId: number, userId: number): Subtask | null {
+    const row = db
+      .prepare(
+        `SELECT subtasks.*
+         FROM subtasks
+         INNER JOIN todos ON todos.id = subtasks.todo_id
+         WHERE subtasks.id = ? AND todos.user_id = ?`,
+      )
+      .get(subtaskId, userId) as SubtaskRow | undefined
+
+    return row ? mapSubtaskRow(row) : null
   },
-  create(_input: CreateSubtaskInput): Subtask {
-    return unimplemented('subtaskDB.create')
+  listByTodoId(todoId: number): Subtask[] {
+    const rows = db
+      .prepare('SELECT * FROM subtasks WHERE todo_id = ? ORDER BY position ASC, id ASC')
+      .all(todoId) as SubtaskRow[]
+
+    return rows.map(mapSubtaskRow)
   },
-  update(_subtaskId: number, _input: UpdateSubtaskInput): Subtask {
-    return unimplemented('subtaskDB.update')
+  create(input: CreateSubtaskInput): Subtask {
+    const positionRow = db
+      .prepare('SELECT COALESCE(MAX(position), -1) AS max_position FROM subtasks WHERE todo_id = ?')
+      .get(input.todo_id) as { max_position: number }
+
+    const position = input.position ?? positionRow.max_position + 1
+    const result = db
+      .prepare('INSERT INTO subtasks (todo_id, title, position, created_at) VALUES (?, ?, ?, ?)')
+      .run(input.todo_id, input.title, position, toSingaporeISOString(getSingaporeNow()))
+
+    const row = db.prepare('SELECT * FROM subtasks WHERE id = ?').get(Number(result.lastInsertRowid)) as SubtaskRow | undefined
+
+    if (!row) {
+      throw new Error('Failed to create subtask')
+    }
+
+    return mapSubtaskRow(row)
   },
-  delete(_subtaskId: number): void {
-    return unimplemented('subtaskDB.delete')
+  update(subtaskId: number, input: UpdateSubtaskInput): Subtask {
+    const updates: string[] = []
+    const values: Array<number | string> = []
+
+    if (input.title !== undefined) {
+      updates.push('title = ?')
+      values.push(input.title)
+    }
+
+    if (input.completed !== undefined) {
+      updates.push('completed = ?')
+      values.push(input.completed ? 1 : 0)
+    }
+
+    if (input.position !== undefined) {
+      updates.push('position = ?')
+      values.push(input.position)
+    }
+
+    if (input.created_at !== undefined) {
+      updates.push('created_at = ?')
+      values.push(input.created_at)
+    }
+
+    if (updates.length === 0) {
+      const existing = db.prepare('SELECT * FROM subtasks WHERE id = ?').get(subtaskId) as SubtaskRow | undefined
+
+      if (!existing) {
+        throw new Error('Subtask not found')
+      }
+
+      return mapSubtaskRow(existing)
+    }
+
+    values.push(subtaskId)
+    const result = db.prepare(`UPDATE subtasks SET ${updates.join(', ')} WHERE id = ?`).run(...values)
+    ensureRecordChanged(result.changes, 'Subtask not found')
+
+    const row = db.prepare('SELECT * FROM subtasks WHERE id = ?').get(subtaskId) as SubtaskRow | undefined
+
+    if (!row) {
+      throw new Error('Failed to update subtask')
+    }
+
+    return mapSubtaskRow(row)
+  },
+  delete(subtaskId: number): void {
+    const result = db.prepare('DELETE FROM subtasks WHERE id = ?').run(subtaskId)
+    ensureRecordChanged(result.changes, 'Subtask not found')
   },
 }
 
 export const tagDB = {
-  listByUserId(_userId: number): Tag[] {
-    return unimplemented('tagDB.listByUserId')
+  findByIdForUser(tagId: number, userId: number): Tag | null {
+    const row = db.prepare('SELECT * FROM tags WHERE id = ? AND user_id = ?').get(tagId, userId) as Tag | undefined
+    return row ?? null
   },
-  findByName(_userId: number, _name: string): Tag | null {
-    return unimplemented('tagDB.findByName')
+  listByUserId(userId: number): Tag[] {
+    return db.prepare('SELECT * FROM tags WHERE user_id = ? ORDER BY name COLLATE NOCASE ASC, id ASC').all(userId) as Tag[]
   },
-  create(_input: CreateTagInput): Tag {
-    return unimplemented('tagDB.create')
+  findByName(userId: number, name: string): Tag | null {
+    const row = db
+      .prepare('SELECT * FROM tags WHERE user_id = ? AND LOWER(name) = LOWER(?)')
+      .get(userId, name) as Tag | undefined
+
+    return row ?? null
   },
-  update(_tagId: number, _userId: number, _input: UpdateTagInput): Tag {
-    return unimplemented('tagDB.update')
+  create(input: CreateTagInput): Tag {
+    const result = db
+      .prepare('INSERT INTO tags (user_id, name, color, created_at) VALUES (?, ?, ?, ?)')
+      .run(input.user_id, input.name, input.color ?? '#3B82F6', toSingaporeISOString(getSingaporeNow()))
+
+    const row = db.prepare('SELECT * FROM tags WHERE id = ?').get(Number(result.lastInsertRowid)) as Tag | undefined
+
+    if (!row) {
+      throw new Error('Failed to create tag')
+    }
+
+    return row
   },
-  delete(_tagId: number, _userId: number): void {
-    return unimplemented('tagDB.delete')
+  update(tagId: number, userId: number, input: UpdateTagInput): Tag {
+    const updates: string[] = []
+    const values: Array<number | string> = []
+
+    if (input.name !== undefined) {
+      updates.push('name = ?')
+      values.push(input.name)
+    }
+
+    if (input.color !== undefined) {
+      updates.push('color = ?')
+      values.push(input.color)
+    }
+
+    if (updates.length === 0) {
+      const existing = db.prepare('SELECT * FROM tags WHERE id = ? AND user_id = ?').get(tagId, userId) as Tag | undefined
+
+      if (!existing) {
+        throw new Error('Tag not found')
+      }
+
+      return existing
+    }
+
+    values.push(tagId, userId)
+    const result = db.prepare(`UPDATE tags SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`).run(...values)
+    ensureRecordChanged(result.changes, 'Tag not found')
+
+    const row = db.prepare('SELECT * FROM tags WHERE id = ? AND user_id = ?').get(tagId, userId) as Tag | undefined
+
+    if (!row) {
+      throw new Error('Failed to update tag')
+    }
+
+    return row
+  },
+  delete(tagId: number, userId: number): void {
+    const result = db.prepare('DELETE FROM tags WHERE id = ? AND user_id = ?').run(tagId, userId)
+    ensureRecordChanged(result.changes, 'Tag not found')
   },
 }
 
 export const templateDB = {
-  listByUserId(_userId: number): Template[] {
-    return unimplemented('templateDB.listByUserId')
+  listByUserId(userId: number): Template[] {
+    return db.prepare('SELECT * FROM templates WHERE user_id = ? ORDER BY name COLLATE NOCASE ASC, id ASC').all(userId) as Template[]
   },
-  findByIdForUser(_templateId: number, _userId: number): Template | null {
-    return unimplemented('templateDB.findByIdForUser')
+  findByIdForUser(templateId: number, userId: number): Template | null {
+    const row = db.prepare('SELECT * FROM templates WHERE id = ? AND user_id = ?').get(templateId, userId) as Template | undefined
+    return row ?? null
   },
-  create(_input: CreateTemplateInput): Template {
-    return unimplemented('templateDB.create')
+  create(input: CreateTemplateInput): Template {
+    const result = db.prepare(
+      `INSERT INTO templates (
+        user_id,
+        name,
+        description,
+        category,
+        title_template,
+        priority,
+        is_recurring,
+        recurrence_pattern,
+        reminder_minutes,
+        due_date_offset_minutes,
+        subtasks_json
+        , created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.user_id,
+      input.name,
+      input.description ?? null,
+      input.category ?? null,
+      input.title_template,
+      input.priority ?? 'medium',
+      input.is_recurring ? 1 : 0,
+      input.recurrence_pattern ?? null,
+      input.reminder_minutes ?? null,
+      input.due_date_offset_minutes ?? null,
+      input.subtasks_json ?? null,
+      toSingaporeISOString(getSingaporeNow()),
+    )
+
+    const template = templateDB.findByIdForUser(Number(result.lastInsertRowid), input.user_id)
+
+    if (!template) {
+      throw new Error('Failed to create template')
+    }
+
+    return template
   },
-  update(_templateId: number, _userId: number, _input: UpdateTemplateInput): Template {
-    return unimplemented('templateDB.update')
+  update(templateId: number, userId: number, input: UpdateTemplateInput): Template {
+    const updates: string[] = []
+    const values: Array<number | string | null> = []
+
+    if (input.name !== undefined) {
+      updates.push('name = ?')
+      values.push(input.name)
+    }
+
+    if (input.description !== undefined) {
+      updates.push('description = ?')
+      values.push(input.description)
+    }
+
+    if (input.category !== undefined) {
+      updates.push('category = ?')
+      values.push(input.category)
+    }
+
+    if (input.title_template !== undefined) {
+      updates.push('title_template = ?')
+      values.push(input.title_template)
+    }
+
+    if (input.priority !== undefined) {
+      updates.push('priority = ?')
+      values.push(input.priority)
+    }
+
+    if (input.is_recurring !== undefined) {
+      updates.push('is_recurring = ?')
+      values.push(input.is_recurring ? 1 : 0)
+    }
+
+    if (input.recurrence_pattern !== undefined) {
+      updates.push('recurrence_pattern = ?')
+      values.push(input.recurrence_pattern)
+    }
+
+    if (input.reminder_minutes !== undefined) {
+      updates.push('reminder_minutes = ?')
+      values.push(input.reminder_minutes)
+    }
+
+    if (input.due_date_offset_minutes !== undefined) {
+      updates.push('due_date_offset_minutes = ?')
+      values.push(input.due_date_offset_minutes)
+    }
+
+    if (input.subtasks_json !== undefined) {
+      updates.push('subtasks_json = ?')
+      values.push(input.subtasks_json)
+    }
+
+    if (updates.length === 0) {
+      const existing = templateDB.findByIdForUser(templateId, userId)
+
+      if (!existing) {
+        throw new Error('Template not found')
+      }
+
+      return existing
+    }
+
+    values.push(templateId, userId)
+    const result = db.prepare(`UPDATE templates SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`).run(...values)
+    ensureRecordChanged(result.changes, 'Template not found')
+
+    const template = templateDB.findByIdForUser(templateId, userId)
+
+    if (!template) {
+      throw new Error('Failed to update template')
+    }
+
+    return template
   },
-  delete(_templateId: number, _userId: number): void {
-    return unimplemented('templateDB.delete')
+  delete(templateId: number, userId: number): void {
+    const result = db.prepare('DELETE FROM templates WHERE id = ? AND user_id = ?').run(templateId, userId)
+    ensureRecordChanged(result.changes, 'Template not found')
   },
 }
 
 export const holidayDB = {
   listAll(): Holiday[] {
-    return unimplemented('holidayDB.listAll')
+    return db.prepare('SELECT * FROM holidays ORDER BY date ASC, id ASC').all() as Holiday[]
   },
-  upsert(_date: string, _name: string): Holiday {
-    return unimplemented('holidayDB.upsert')
+  upsert(date: string, name: string): Holiday {
+    db.prepare(
+      `INSERT INTO holidays (date, name, created_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(date) DO UPDATE SET name = excluded.name`,
+    ).run(date, name, toSingaporeISOString(getSingaporeNow()))
+
+    const row = db.prepare('SELECT * FROM holidays WHERE date = ?').get(date) as Holiday | undefined
+
+    if (!row) {
+      throw new Error('Failed to upsert holiday')
+    }
+
+    return row
   },
 }
 
