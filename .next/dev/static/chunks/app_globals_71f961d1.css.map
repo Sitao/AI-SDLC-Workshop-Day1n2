@@ -1,0 +1,6 @@
+{
+  "version": 3,
+  "sources": [],
+  "sections": [
+    {"offset": {"line": 1, "column": 0}, "map": {"version":3,"sources":["file:///Users/chenzhidao/Documents/AI-SDLC-Workshop-Day1n2-1/app/globals.css"],"sourcesContent":["@import \"tailwindcss\";\n\n:root {\n  --bg: #fffaf0;\n  --fg: #1f2937;\n  --surface: #ffffff;\n  --accent: #0f766e;\n  --danger: #b91c1c;\n}\n\n* {\n  box-sizing: border-box;\n}\n\nhtml,\nbody {\n  margin: 0;\n  padding: 0;\n  min-height: 100%;\n}\n\nbody {\n  font-family: \"Avenir Next\", \"Helvetica Neue\", Helvetica, sans-serif;\n  color: var(--fg);\n  background:\n    radial-gradient(circle at 20% 20%, #fde68a 0%, transparent 30%),\n    radial-gradient(circle at 80% 0%, #99f6e4 0%, transparent 25%),\n    var(--bg);\n}\n"],"names":[],"mappings":"AAEA;;;;;;;;AAQA;;;;AAIA;;;;;;AAOA","debugId":null}}]
+}

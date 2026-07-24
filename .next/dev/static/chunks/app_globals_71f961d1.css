@@ -1,0 +1,26 @@
+/* [project]/app/globals.css [app-client] (css) */
+:root {
+  --bg: #fffaf0;
+  --fg: #1f2937;
+  --surface: #fff;
+  --accent: #0f766e;
+  --danger: #b91c1c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  color: var(--fg);
+  background: radial-gradient(circle at 20% 20%, #fde68a 0%, transparent 30%), radial-gradient(circle at 80% 0%, #99f6e4 0%, transparent 25%), var(--bg);
+  font-family: Avenir Next, Helvetica Neue, Helvetica, sans-serif;
+}
+
+/*# sourceMappingURL=app_globals_71f961d1.css.map*/
